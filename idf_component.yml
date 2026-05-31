@@ -1,0 +1,7 @@
+version: "0.1.0"
+description: "openeebus library for ESP-IDF"
+
+dependencies:
+  idf: ">=5.1.0"
+  espressif/libwebsockets: "^4.3.3~1"
+  espressif/mdns: "*"
