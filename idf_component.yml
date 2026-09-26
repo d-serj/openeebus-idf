@@ -3,5 +3,6 @@ description: "openeebus library for ESP-IDF"
 
 dependencies:
   idf: ">=5.1.0"
+  espressif/cjson: "^1.7.19"
   espressif/esp_websocket_client: "^1.8.0"
   espressif/mdns: "*"

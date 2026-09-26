@@ -38,7 +38,7 @@ idf_component_register(
     INCLUDE_DIRS "${EEBUS_DIR}"
     REQUIRES
         freertos
-        json
+        espressif__cjson
         mbedtls
         esp_wifi
         nvs_flash

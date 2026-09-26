@@ -24,6 +24,10 @@
 #error "OpenEEBUS SHIP requires CONFIG_HTTPD_WS_SUPPORT=y"
 #endif
 
+#ifndef CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+#error "OpenEEBUS SHIP requires CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT=y"
+#endif
+
 #ifndef CONFIG_ESP_TLS_SERVER_MIN_AUTH_MODE_OPTIONAL
 #error "SHIP mutual TLS requires CONFIG_ESP_TLS_SERVER_MIN_AUTH_MODE_OPTIONAL=y"
 #endif
@@ -164,38 +168,37 @@ static char *PeerSki(httpd_handle_t server, int socket_fd) {
     return (char *)TlsCertificateCalcPublicKeySki(certificate->raw.p, certificate->raw.len);
 }
 
-static esp_err_t HandleWebsocket(httpd_req_t *request) {
+static esp_err_t HandleWebsocketHandshake(httpd_req_t *request) {
     HttpServerEsp32 *const http_server = request->user_ctx;
     const int socket_fd = httpd_req_to_sockfd(request);
 
-    if (request->method == HTTP_GET) {
-        char *const peer_ski = PeerSki(request->handle, socket_fd);
-        if ((peer_ski == NULL) || (http_server->connection_callback == NULL)) {
-            ESP_LOGE(kTag, "rejecting SHIP connection without a peer certificate");
-            EEBUS_FREE(peer_ski);
-            return ESP_FAIL;
-        }
-
-        WebsocketCreatorObject *const creator = WebsocketServerCreatorEsp32Create(request->handle, socket_fd);
-        if (creator == NULL) {
-            EEBUS_FREE(peer_ski);
-            return ESP_ERR_NO_MEM;
-        }
-
-        const int callback_result
-            = http_server->connection_callback(peer_ski, creator, http_server->connection_context);
-        WebsocketObject *const websocket = WebsocketServerCreatorEsp32GetCreated(creator);
-        WebsocketCreatorDelete(creator);
+    char *const peer_ski = PeerSki(request->handle, socket_fd);
+    if ((peer_ski == NULL) || (http_server->connection_callback == NULL)) {
+        ESP_LOGE(kTag, "rejecting SHIP connection without a peer certificate");
         EEBUS_FREE(peer_ski);
-
-        if ((callback_result != 0) || (websocket == NULL)) {
-            ESP_LOGW(kTag, "SHIP connection rejected");
-            return ESP_FAIL;
-        }
-        httpd_sess_set_ctx(request->handle, socket_fd, websocket, SessionClosed);
-        return ESP_OK;
+        return ESP_FAIL;
     }
 
+    WebsocketCreatorObject *const creator = WebsocketServerCreatorEsp32Create(request->handle, socket_fd);
+    if (creator == NULL) {
+        EEBUS_FREE(peer_ski);
+        return ESP_ERR_NO_MEM;
+    }
+
+    const int callback_result = http_server->connection_callback(peer_ski, creator, http_server->connection_context);
+    WebsocketObject *const websocket = WebsocketServerCreatorEsp32GetCreated(creator);
+    WebsocketCreatorDelete(creator);
+    EEBUS_FREE(peer_ski);
+
+    if ((callback_result != 0) || (websocket == NULL)) {
+        ESP_LOGW(kTag, "SHIP connection rejected");
+        return ESP_FAIL;
+    }
+    httpd_sess_set_ctx(request->handle, socket_fd, websocket, SessionClosed);
+    return ESP_OK;
+}
+
+static esp_err_t HandleWebsocket(httpd_req_t *request) {
     WebsocketObject *const websocket = request->sess_ctx;
     if (websocket == NULL) {
         return ESP_FAIL;
@@ -272,6 +275,12 @@ static EebusError ServerStart(HttpServerObject *self) {
         .servercert_bytes = TLS_CERTIFICATE_GET_CERTIFICATE_SIZE(http_server->tls_certificate),
         .serverkey_buf = TLS_CERTIFICATE_GET_PRIVATE_KEY(http_server->tls_certificate),
         .serverkey_bytes = TLS_CERTIFICATE_GET_PRIVATE_KEY_SIZE(http_server->tls_certificate),
+        /* ESP-TLS only enables optional client authentication when a CA is configured.
+         * SHIP authorizes peers by SKI, so verification errors are allowed here.
+         */
+        .cacert_buf = TLS_CERTIFICATE_GET_CERTIFICATE(http_server->tls_certificate),
+        .cacert_bytes = TLS_CERTIFICATE_GET_CERTIFICATE_SIZE(http_server->tls_certificate),
+        .client_cert_authmode_optional = true,
     };
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
@@ -298,6 +307,7 @@ static EebusError ServerStart(HttpServerObject *self) {
         .is_websocket = true,
         .handle_ws_control_frames = true,
         .supported_subprotocol = "ship",
+        .ws_post_handshake_cb = HandleWebsocketHandshake,
     };
 
     result = httpd_register_uri_handler(http_server->server, &uri);
