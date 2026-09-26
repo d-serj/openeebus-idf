@@ -348,7 +348,7 @@ static void ClientEventHandler(void *arg, esp_event_base_t base, int32_t event_i
                 Esp32WebsocketStateNotifyTerminal(&websocket->state, kWebsocketCallbackTypeError, -1);
                 break;
             }
-            if (data->op_code == 0x8) {
+            if (data->op_code == WS_TRANSPORT_OPCODES_CLOSE) {
                 int32_t close_code = 0;
                 if ((data->data_ptr != NULL) && (data->data_len >= 2)) {
                     uint16_t network_code;
@@ -357,6 +357,10 @@ static void ClientEventHandler(void *arg, esp_event_base_t base, int32_t event_i
                 }
                 xEventGroupSetBits(websocket->events, kTerminalBit);
                 Esp32WebsocketStateNotifyTerminal(&websocket->state, kWebsocketCallbackTypeClose, close_code);
+            } else if ((data->op_code == WS_TRANSPORT_OPCODES_PING)
+                       || (data->op_code == WS_TRANSPORT_OPCODES_PONG)) {
+                // esp_websocket_client handles PING and PONG after dispatching their data events.
+                break;
             } else if (!Esp32WebsocketStateReceive(&websocket->state,
                                                    data->op_code,
                                                    (const uint8_t *)data->data_ptr,
