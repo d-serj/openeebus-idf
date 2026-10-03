@@ -19,6 +19,7 @@
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
 #include "src/common/eebus_malloc.h"
+#include "src/common/string_util.h"
 #include "src/ship/api/tls_certificate_interface.h"
 #include "src/ship/api/websocket_interface.h"
 #include "src/ship/tls_certificate/tls_certificate.h"
@@ -190,7 +191,7 @@ static int PinnedTlsConnect(esp_transport_handle_t transport, const char *host, 
     }
 
     const char *const actual_ski = TlsCertificateCalcPublicKeySki(peer_certificate->raw.p, peer_certificate->raw.len);
-    const bool ski_matches = (actual_ski != NULL) && (strcmp(actual_ski, context->remote_ski) == 0);
+    const bool ski_matches = StringEqualsIgnoreCase(actual_ski, context->remote_ski);
     if (!ski_matches) {
         ESP_LOGE(kTag, "server certificate SKI does not match the trusted SKI");
     }
