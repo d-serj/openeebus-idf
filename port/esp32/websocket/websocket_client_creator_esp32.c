@@ -11,3 +11,10 @@ WebsocketCreatorObject *WebsocketClientCreatorCreate(const char *uri,
                                                      const char *remote_ski) {
     return WebsocketClientCreatorEsp32Create(uri, tls_cert, remote_ski);
 }
+
+WebsocketCreatorObject *WebsocketClientCreatorCreateWithFingerprint(const char *uri,
+                                                                    const TlsCertificateObject *tls_cert,
+                                                                    const char *remote_ski,
+                                                                    const char *remote_fingerprint) {
+    return WebsocketClientCreatorEsp32CreateWithFingerprint(uri, tls_cert, remote_ski, remote_fingerprint);
+}

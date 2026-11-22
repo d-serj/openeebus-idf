@@ -52,6 +52,7 @@ typedef struct Esp32PinnedTlsTransport {
     uint8_t *private_key;
     size_t private_key_size;
     char *remote_ski;
+    char *remote_fingerprint;
 } Esp32PinnedTlsTransport;
 
 typedef struct WebsocketClientEsp32 {
@@ -72,6 +73,7 @@ typedef struct WebsocketClientCreatorEsp32 {
     uint8_t *private_key;
     size_t private_key_size;
     char *remote_ski;
+    char *remote_fingerprint;
 } WebsocketClientCreatorEsp32;
 
 #define WS_CLIENT(obj) ((WebsocketClientEsp32 *)(obj))
@@ -203,6 +205,22 @@ static int PinnedTlsConnect(esp_transport_handle_t transport, const char *host, 
         return -1;
     }
 
+    if (context->remote_fingerprint != NULL) {
+        const char *const actual_fingerprint
+            = TlsCertificateCalcFingerprintSha256(peer_certificate->raw.p, peer_certificate->raw.len);
+        const bool fingerprint_matches = StringEqualsIgnoreCase(actual_fingerprint, context->remote_fingerprint);
+        if (!fingerprint_matches) {
+            ESP_LOGE(kTag, "server certificate fingerprint does not match the trusted fingerprint");
+        }
+        EEBUS_FREE((void *)actual_fingerprint);
+        if (!fingerprint_matches) {
+            esp_tls_conn_destroy(context->tls);
+            context->tls = NULL;
+            context->socket_fd = -1;
+            return -1;
+        }
+    }
+
     return 0;
 }
 
@@ -277,6 +295,7 @@ static int PinnedTlsDestroy(esp_transport_handle_t transport) {
     EEBUS_FREE(context->certificate);
     EEBUS_FREE(context->private_key);
     EEBUS_FREE(context->remote_ski);
+    EEBUS_FREE(context->remote_fingerprint);
     EEBUS_FREE(context);
     esp_transport_set_context_data(transport, NULL);
 
@@ -302,11 +321,14 @@ static esp_transport_handle_t CreatePinnedTlsTransport(const WebsocketClientCrea
     context->private_key = CopyBytes(creator->private_key, creator->private_key_size);
     context->private_key_size = creator->private_key_size;
     context->remote_ski = CopyString(creator->remote_ski);
+    context->remote_fingerprint = CopyString(creator->remote_fingerprint);
 
-    if ((context->certificate == NULL) || (context->private_key == NULL) || (context->remote_ski == NULL)) {
+    if ((context->certificate == NULL) || (context->private_key == NULL) || (context->remote_ski == NULL)
+        || ((creator->remote_fingerprint != NULL) && (context->remote_fingerprint == NULL))) {
         EEBUS_FREE(context->certificate);
         EEBUS_FREE(context->private_key);
         EEBUS_FREE(context->remote_ski);
+        EEBUS_FREE(context->remote_fingerprint);
         EEBUS_FREE(context);
         esp_transport_destroy(transport);
         return NULL;
@@ -472,10 +494,12 @@ static void CreatorDestruct(WebsocketCreatorObject *self) {
     EEBUS_FREE(creator->certificate);
     EEBUS_FREE(creator->private_key);
     EEBUS_FREE(creator->remote_ski);
+    EEBUS_FREE(creator->remote_fingerprint);
     creator->uri = NULL;
     creator->certificate = NULL;
     creator->private_key = NULL;
     creator->remote_ski = NULL;
+    creator->remote_fingerprint = NULL;
 }
 
 static WebsocketObject *CreatorCreateWebsocket(WebsocketCreatorObject *self, WebsocketCallback callback, void *ctx) {
@@ -554,6 +578,13 @@ static const WebsocketCreatorInterface kCreatorMethods = {
 WebsocketCreatorObject *WebsocketClientCreatorEsp32Create(const char *uri,
                                                           const TlsCertificateObject *tls_cert,
                                                           const char *remote_ski) {
+    return WebsocketClientCreatorEsp32CreateWithFingerprint(uri, tls_cert, remote_ski, NULL);
+}
+
+WebsocketCreatorObject *WebsocketClientCreatorEsp32CreateWithFingerprint(const char *uri,
+                                                                          const TlsCertificateObject *tls_cert,
+                                                                          const char *remote_ski,
+                                                                          const char *remote_fingerprint) {
     if ((uri == NULL) || (tls_cert == NULL) || (remote_ski == NULL) || (remote_ski[0] == '\0')) {
         return NULL;
     }
@@ -571,9 +602,11 @@ WebsocketCreatorObject *WebsocketClientCreatorEsp32Create(const char *uri,
     creator->private_key_size = TLS_CERTIFICATE_GET_PRIVATE_KEY_SIZE(tls_cert);
     creator->private_key = CopyBytes(TLS_CERTIFICATE_GET_PRIVATE_KEY(tls_cert), creator->private_key_size);
     creator->remote_ski = CopyString(remote_ski);
+    creator->remote_fingerprint = CopyString(remote_fingerprint);
 
     if ((creator->uri == NULL) || (creator->certificate == NULL) || (creator->private_key == NULL)
-        || (creator->remote_ski == NULL)) {
+        || (creator->remote_ski == NULL)
+        || ((remote_fingerprint != NULL) && (creator->remote_fingerprint == NULL))) {
         CreatorDestruct(WEBSOCKET_CREATOR_OBJECT(creator));
         EEBUS_FREE(creator);
         return NULL;

@@ -46,6 +46,7 @@ typedef struct HttpServerEsp32 {
     void *connection_context;
     httpd_handle_t server;
     esp_tls_cfg_server_t tls_config;
+    const char *peer_fingerprint;
 } HttpServerEsp32;
 
 typedef struct ServerTlsSession {
@@ -153,42 +154,49 @@ static void TlsClose(httpd_handle_t server, int socket_fd) {
      */
 }
 
-static char *PeerSki(httpd_handle_t server, int socket_fd) {
+static const mbedtls_x509_crt *GetPeerCertificate(httpd_handle_t server, int socket_fd) {
     ServerTlsSession *const session = httpd_sess_get_transport_ctx(server, socket_fd);
     if ((session == NULL) || (session->tls == NULL)) {
         return NULL;
     }
 
     mbedtls_ssl_context *const ssl = esp_tls_get_ssl_context(session->tls);
-    const mbedtls_x509_crt *const certificate = (ssl != NULL) ? mbedtls_ssl_get_peer_cert(ssl) : NULL;
-    if ((certificate == NULL) || (certificate->raw.p == NULL) || (certificate->raw.len == 0)) {
-        return NULL;
-    }
-
-    return (char *)TlsCertificateCalcPublicKeySki(certificate->raw.p, certificate->raw.len);
+    return (ssl != NULL) ? mbedtls_ssl_get_peer_cert(ssl) : NULL;
 }
 
 static esp_err_t HandleWebsocketHandshake(httpd_req_t *request) {
     HttpServerEsp32 *const http_server = request->user_ctx;
     const int socket_fd = httpd_req_to_sockfd(request);
 
-    char *const peer_ski = PeerSki(request->handle, socket_fd);
-    if ((peer_ski == NULL) || (http_server->connection_callback == NULL)) {
+    const mbedtls_x509_crt *const certificate = GetPeerCertificate(request->handle, socket_fd);
+    if ((certificate == NULL) || (certificate->raw.p == NULL) || (certificate->raw.len == 0)
+        || (http_server->connection_callback == NULL)) {
         ESP_LOGE(kTag, "rejecting SHIP connection without a peer certificate");
-        EEBUS_FREE(peer_ski);
+        return ESP_FAIL;
+    }
+
+    const char *const peer_ski = TlsCertificateCalcPublicKeySki(certificate->raw.p, certificate->raw.len);
+    if (peer_ski == NULL) {
         return ESP_FAIL;
     }
 
     WebsocketCreatorObject *const creator = WebsocketServerCreatorEsp32Create(request->handle, socket_fd);
     if (creator == NULL) {
-        EEBUS_FREE(peer_ski);
+        EEBUS_FREE((void *)peer_ski);
         return ESP_ERR_NO_MEM;
     }
 
-    const int callback_result = http_server->connection_callback(peer_ski, creator, http_server->connection_context);
+    /* The HTTP server task serializes handshakes. Expose the fingerprint only during the callback. */
+    const char *const peer_fingerprint = TlsCertificateCalcFingerprintSha256(certificate->raw.p, certificate->raw.len);
+    http_server->peer_fingerprint = peer_fingerprint;
+    const int callback_result = http_server->connection_callback(kWebsocketServerEventEstablished, peer_ski, creator,
+                                                                 http_server->connection_context);
+    http_server->peer_fingerprint = NULL;
+    EEBUS_FREE((void *)peer_fingerprint);
+
     WebsocketObject *const websocket = WebsocketServerCreatorEsp32GetCreated(creator);
     WebsocketCreatorDelete(creator);
-    EEBUS_FREE(peer_ski);
+    EEBUS_FREE((void *)peer_ski);
 
     if ((callback_result != 0) || (websocket == NULL)) {
         ESP_LOGW(kTag, "SHIP connection rejected");
@@ -333,10 +341,16 @@ static void ServerDestruct(HttpServerObject *self) {
     ServerStop(self);
 }
 
+static const char *ServerGetPeerFingerprint(const HttpServerObject *self) {
+    const HttpServerEsp32 *const http_server = (const HttpServerEsp32 *)self;
+    return http_server->peer_fingerprint;
+}
+
 static const HttpServerInterface kServerMethods = {
     .destruct = ServerDestruct,
     .start = ServerStart,
     .stop = ServerStop,
+    .get_peer_fingerprint = ServerGetPeerFingerprint,
 };
 
 HttpServerObject *HttpServerCreate(int port,

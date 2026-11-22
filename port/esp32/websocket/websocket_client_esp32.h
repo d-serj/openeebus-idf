@@ -15,6 +15,10 @@ extern "C" {
 WebsocketCreatorObject *WebsocketClientCreatorEsp32Create(const char *uri,
                                                           const TlsCertificateObject *tls_cert,
                                                           const char *remote_ski);
+WebsocketCreatorObject *WebsocketClientCreatorEsp32CreateWithFingerprint(const char *uri,
+                                                                          const TlsCertificateObject *tls_cert,
+                                                                          const char *remote_ski,
+                                                                          const char *remote_fingerprint);
 
 #ifdef __cplusplus
 }
